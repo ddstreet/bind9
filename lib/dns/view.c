@@ -699,8 +699,7 @@ dns_view_weakdetach(dns_view_t **viewp) {
 	view = *viewp;
 	REQUIRE(DNS_VIEW_VALID(view));
 
-	uint32_t weakrefs = isc_refcount_decrement(&view->weakrefs);
-	INSIST(weakrefs > 1);
+	INSIST(isc_refcount_decrement(&view->weakrefs) > 0);
 
 	LOCK(&view->lock);
 	done = all_done(view);
