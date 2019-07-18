@@ -64,9 +64,15 @@
 	       if (result != ISC_R_SUCCESS) goto cleanup;	 \
 	} while (0)
 
-#define RESSHUTDOWN(v)	(((v)->attributes & DNS_VIEWATTR_RESSHUTDOWN) != 0)
-#define ADBSHUTDOWN(v)	(((v)->attributes & DNS_VIEWATTR_ADBSHUTDOWN) != 0)
-#define REQSHUTDOWN(v)	(((v)->attributes & DNS_VIEWATTR_REQSHUTDOWN) != 0)
+#define GET_ATTR(v, bit) \
+        { bool _b; LOCK(&(v)->attributes_lock); _b = (((v)->attributes & (bit)) != 0); UNLOCK(&(v)->attributes_lock); _b; }
+#define CLEAR_ATTR(v, bit) \
+        { LOCK(&(v)->attributes_lock); (v)->attributes &= ~(bit); UNLOCK(&(v)->attributes_lock); }
+#define SET_ATTR(v, bit) \
+        { LOCK(&(v)->attributes_lock); (v)->attributes |= (bit); UNLOCK(&(v)->attributes_lock); }
+#define RESSHUTDOWN(v)	(GET_ATTR((v), DNS_VIEWATTR_RESSHUTDOWN))
+#define ADBSHUTDOWN(v)	(GET_ATTR((v), DNS_VIEWATTR_ADBSHUTDOWN))
+#define REQSHUTDOWN(v)	(GET_ATTR((v), DNS_VIEWATTR_REQSHUTDOWN))
 
 #define DNS_VIEW_DELONLYHASH 111
 #define DNS_VIEW_FAILCACHESIZE 1021
@@ -150,6 +156,7 @@ dns_view_create(isc_mem_t *mctx, dns_rdataclass_t rdclass,
 	view->task = NULL;
 	isc_refcount_init(&view->references, 1);
 	isc_refcount_init(&view->weakrefs, 0);
+	isc_mutex_init(&view->attributes_lock);
 	view->attributes = (DNS_VIEWATTR_RESSHUTDOWN|DNS_VIEWATTR_ADBSHUTDOWN|
 			    DNS_VIEWATTR_REQSHUTDOWN);
 	view->statickeys = NULL;
@@ -560,7 +567,6 @@ destroy(dns_view_t *view) {
 
 /*
  * Return true iff 'view' may be freed.
- * The caller must be holding the view lock.
  */
 static bool
 all_done(dns_view_t *view) {
@@ -634,8 +640,8 @@ view_flushanddetach(dns_view_t **viewp, bool flush) {
 		if (view->catzs != NULL) {
 			dns_catz_catzs_detach(&view->catzs);
 		}
-		done = all_done(view);
 		UNLOCK(&view->lock);
+		done = all_done(view);
 
 		/* Need to detach zones outside view lock */
 		if (mkzone != NULL) {
@@ -701,9 +707,7 @@ dns_view_weakdetach(dns_view_t **viewp) {
 
 	INSIST(isc_refcount_decrement(&view->weakrefs) > 0);
 
-	LOCK(&view->lock);
 	done = all_done(view);
-	UNLOCK(&view->lock);
 
 	*viewp = NULL;
 
@@ -725,12 +729,8 @@ resolver_shutdown(isc_task_t *task, isc_event_t *event) {
 
 	isc_event_free(&event);
 
-	LOCK(&view->lock);
-
-	view->attributes |= DNS_VIEWATTR_RESSHUTDOWN;
+	SET_ATTR(view, DNS_VIEWATTR_RESSHUTDOWN);
 	done = all_done(view);
-
-	UNLOCK(&view->lock);
 
 	if (done)
 		destroy(view);
@@ -749,12 +749,8 @@ adb_shutdown(isc_task_t *task, isc_event_t *event) {
 
 	isc_event_free(&event);
 
-	LOCK(&view->lock);
-
-	view->attributes |= DNS_VIEWATTR_ADBSHUTDOWN;
+	SET_ATTR(view, DNS_VIEWATTR_ADBSHUTDOWN)
 	done = all_done(view);
-
-	UNLOCK(&view->lock);
 
 	if (done)
 		destroy(view);
@@ -773,12 +769,8 @@ req_shutdown(isc_task_t *task, isc_event_t *event) {
 
 	isc_event_free(&event);
 
-	LOCK(&view->lock);
-
-	view->attributes |= DNS_VIEWATTR_REQSHUTDOWN;
+	SET_ATTR(view, DNS_VIEWATTR_REQSHUTDOWN);
 	done = all_done(view);
-
-	UNLOCK(&view->lock);
 
 	if (done)
 		destroy(view);
@@ -829,7 +821,7 @@ dns_view_createresolver(dns_view_t *view,
 	}
 	event = &view->resevent;
 	dns_resolver_whenshutdown(view->resolver, view->task, &event);
-	view->attributes &= ~DNS_VIEWATTR_RESSHUTDOWN;
+	CLEAR_ATTR(view, DNS_VIEWATTR_RESSHUTDOWN);
 
 	result = isc_mem_create(0, 0, &mctx);
 	if (result != ISC_R_SUCCESS) {
@@ -846,7 +838,7 @@ dns_view_createresolver(dns_view_t *view,
 	}
 	event = &view->adbevent;
 	dns_adb_whenshutdown(view->adb, view->task, &event);
-	view->attributes &= ~DNS_VIEWATTR_ADBSHUTDOWN;
+	CLEAR_ATTR(view, DNS_VIEWATTR_ADBSHUTDOWN);
 
 	result = dns_requestmgr_create(view->mctx, timermgr, socketmgr,
 				      dns_resolver_taskmgr(view->resolver),
@@ -860,7 +852,7 @@ dns_view_createresolver(dns_view_t *view,
 	}
 	event = &view->reqevent;
 	dns_requestmgr_whenshutdown(view->requestmgr, view->task, &event);
-	view->attributes &= ~DNS_VIEWATTR_REQSHUTDOWN;
+	CLEAR_ATTR(view, DNS_VIEWATTR_REQSHUTDOWN);
 
 	return (ISC_R_SUCCESS);
 }

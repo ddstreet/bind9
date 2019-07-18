@@ -199,8 +199,10 @@ struct dns_view {
 	isc_refcount_t			references;
 	isc_refcount_t			weakrefs;
 
-	/* Locked by lock. */
+	/* Locked by dedicated lock. */
+	isc_mutex_t			attributes_lock;
 	unsigned int			attributes;
+
 	/* Under owner's locking control. */
 	ISC_LINK(struct dns_view)	link;
 	dns_viewlist_t *		viewlist;
